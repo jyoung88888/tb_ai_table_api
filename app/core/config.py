@@ -11,13 +11,19 @@ class Settings(BaseSettings):
     API_DESCRIPTION: str = "TB AI 테이블 데이터 집계 및 적재 API"
 
     # 데이터베이스 설정
+    # database_config: Dict[str, Any] = {
+    #     'host': '192.168.213.250',
+    #     'user': 'root',
+    #     'password': 'OnDemand%Ai',
+    #     'charset': 'utf8mb4',
+    #     'database' : "db_energy"
+    # }
     database_config: Dict[str, Any] = {
-        'host': '192.168.213.250',
+        'host': 'localhost',
         'user': 'root',
-        'password': 'OnDemand%Ai',
-        'database': 'solar_mokup',
+        'password': '9758',
         'charset': 'utf8mb4',
-        'database' : "db_energy"
+        'database' : "solar_mokup"
     }
 
     # 테이블명 설정

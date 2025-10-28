@@ -59,14 +59,14 @@ class SolarPowerService:
                 %s as ymdhms,
                 MIN(CASE WHEN wi.tmn > 0 THEN wi.tmn ELSE NULL END) as tmn,
                 MAX(wi.tmx) as tmx,
-                AVG(wi.ics) as ics,
+                SUM(wi.ics) as ics,
                 SUM(sd.forecast_quantity) as pre_pwr_generation,
                 SUM(sd.today_generation) as today_generation,
                 SUM(sd.accum_generation) as accum_generation
 
             FROM {self.solar_day_table} sd
             INNER JOIN {self.weather_info_table} wi
-                ON sd.ymdhms = wi.tm
+                ON DATE(sd.ymdhms) = DATE(wi.tm)
             WHERE DATE(sd.ymdhms) = %s
             """
 
