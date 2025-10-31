@@ -1,6 +1,6 @@
 """
 전력 사용량 데이터 집계 서비스
-tb_ai_pwr_usage 테이블에 데이터 적재 (미정)
+tb_ai_pwr_usage 테이블에 데이터 적재
 """
 import asyncio
 import logging
@@ -11,7 +11,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 class PowerUsageService:
-    """전력 사용량 데이터 집계 및 적재 클래스 (미정)"""
+    """전력 사용량 데이터 집계 및 적재 클래스"""
 
     def __init__(self, db_manager):
         """
@@ -19,12 +19,18 @@ class PowerUsageService:
             db_manager: DatabaseManager 인스턴스
         """
         self.db = db_manager
+        self.smarteye_day_table = settings.table_names.get('smarteye_day', 'tb_aggregate_smarteye_day')
         self.ai_pwr_usage_table = settings.table_names.get('ai_pwr_usage', 'tb_ai_pwr_usage')
 
     async def aggregate_and_insert(self, target_date: str) -> Dict[str, Any]:
         """
-        전력 사용량 데이터 집계 및 적재 (미정)
+        tb_aggregate_smarteye_day의 데이터를 tb_ai_pwr_usage에 적재
         지정된 날짜(YYYY-MM-DD) 하루분의 데이터만 처리
+
+        매핑:
+        - use_time → ymdhms
+        - pwr_kepco_usage_tot → pwr_usage
+        - forecast_quantity → pwr_forecase
 
         Args:
             target_date: 대상 날짜 (YYYY-MM-DD)
@@ -32,21 +38,66 @@ class PowerUsageService:
         Returns:
             Dict: 결과 정보 (success, inserted_count, target_date, message)
         """
-        logger.info(f"📊 [Power Usage] 데이터 집계 및 적재 시작 (미정) - {target_date}")
+        logger.info(f"📊 [Power Usage] 데이터 집계 및 적재 시작 - {target_date}")
 
-        # TODO: 데이터 매핑이 확정되면 구현 예정
-        logger.warning("⚠️ [Power Usage] 데이터 매핑이 아직 확정되지 않았습니다.")
+        try:
+            params = [target_date]
 
-        return {
-            "success": False,
-            "inserted_count": 0,
-            "target_date": target_date,
-            "message": "Power Usage 데이터 매핑이 아직 확정되지 않았습니다."
-        }
+            logger.info(f"📅 [Power Usage] 대상 날짜: {target_date}")
+
+            # INSERT ON DUPLICATE KEY UPDATE를 사용하여 UPSERT 구현
+            # ymdhms를 매칭 키로 사용하여 중복 시 해당 필드만 업데이트 (다른 필드는 유지)
+            query = f"""
+            INSERT INTO {self.ai_pwr_usage_table}
+                (ymdhms, pwr_usage, pwr_forecase)
+            SELECT
+                use_time as ymdhms,
+                pwr_kepco_usage_tot as pwr_usage,
+                forecast_quantity as pwr_forecase
+            FROM {self.smarteye_day_table}
+            WHERE DATE(use_time) = %s
+            ON DUPLICATE KEY UPDATE
+                pwr_usage = VALUES(pwr_usage),
+                pwr_forecase = VALUES(pwr_forecase)
+            """
+
+            logger.info(f"🔍 [Power Usage] 파라미터: {params}")
+
+            async with self.db.get_async_connection() as connection:
+                def _execute():
+                    cursor = connection.cursor()
+                    try:
+                        cursor.execute(query, params)
+                        connection.commit()
+                        affected_rows = cursor.rowcount
+                        logger.info(f"✅ [Power Usage] 영향받은 행 수: {affected_rows}")
+                        return affected_rows
+                    finally:
+                        cursor.close()
+
+                inserted_count = await asyncio.get_event_loop().run_in_executor(None, _execute)
+
+            logger.info(f"✅ [Power Usage] 데이터 집계 및 적재 완료: {inserted_count}건")
+
+            return {
+                "success": True,
+                "inserted_count": inserted_count,
+                "target_date": target_date,
+                "message": f"{target_date} 날짜의 데이터 {inserted_count}건의 Power Usage 데이터를 적재했습니다."
+            }
+
+        except Exception as e:
+            logger.error(f"❌ [Power Usage] 데이터 집계 및 적재 실패: {str(e)}")
+            return {
+                "success": False,
+                "inserted_count": 0,
+                "target_date": target_date,
+                "message": f"Power Usage 데이터 적재 중 오류 발생: {str(e)}"
+            }
 
     async def verify_data(self, limit: int = 10) -> List[Dict[str, Any]]:
         """
-        적재된 데이터 확인 (미정)
+        적재된 데이터 확인
 
         Args:
             limit: 조회할 레코드 수
@@ -54,8 +105,32 @@ class PowerUsageService:
         Returns:
             List[Dict]: 적재된 데이터 리스트
         """
-        logger.warning("⚠️ [Power Usage] 데이터 매핑이 아직 확정되지 않았습니다.")
-        return []
+        query = f"""
+        SELECT
+            ymdhms, pwr_usage, pwr_forecase
+        FROM {self.ai_pwr_usage_table}
+        ORDER BY ymdhms DESC
+        LIMIT %s
+        """
+
+        try:
+            async with self.db.get_async_connection() as connection:
+                def _fetch():
+                    cursor = connection.cursor(pymysql.cursors.DictCursor)
+                    try:
+                        cursor.execute(query, (limit,))
+                        results = cursor.fetchall()
+                        return results
+                    finally:
+                        cursor.close()
+
+                results = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+                logger.info(f"📊 [Power Usage] 최근 {len(results)}건의 데이터 조회 완료")
+                return results
+
+        except Exception as e:
+            logger.error(f"❌ [Power Usage] 데이터 조회 실패: {str(e)}")
+            return []
 
 # 전역 인스턴스
 _power_usage_service = None

@@ -28,9 +28,15 @@ class Settings(BaseSettings):
 
     # 테이블명 설정
     table_names: Dict[str, str] = {
-        # 소스 테이블
+        # 소스 테이블 - 태양 
         'solar_day': 'tb_solar_day',
         'weather_info': 'tb_weather_info',
+        
+        # 소스 테이블 - 전력 
+        'smarteye_day' : 'tb_aggregate_smarteye_day',
+
+        # 소스 테이블 - ESS 
+        
         'bms_daily_stat': 'tb_nrt_bms_daily_stat',
         # AI 테이블
         'ai_solar_power': 'tb_ai_solar_power',
