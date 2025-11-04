@@ -36,7 +36,6 @@ class Settings(BaseSettings):
         'smarteye_day' : 'tb_aggregate_smarteye_day',
 
         # 소스 테이블 - ESS 
-        
         'bms_daily_stat': 'tb_nrt_bms_daily_stat',
         # AI 테이블
         'ai_solar_power': 'tb_ai_solar_power',

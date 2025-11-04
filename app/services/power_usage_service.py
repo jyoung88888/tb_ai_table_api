@@ -41,24 +41,55 @@ class PowerUsageService:
         logger.info(f"📊 [Power Usage] 데이터 집계 및 적재 시작 - {target_date}")
 
         try:
-            params = [target_date]
+            # 날짜 범위 계산 (인덱스 활용을 위해 범위 조건 사용)
+            params = [target_date, target_date]
 
             logger.info(f"📅 [Power Usage] 대상 날짜: {target_date}")
 
+            # 먼저 소스 데이터가 있는지 확인 (인덱스 활용)
+            check_query = f"""
+            SELECT COUNT(*) as cnt,
+                   MIN(use_time) as min_time,
+                   MAX(use_time) as max_time
+            FROM {self.smarteye_day_table}
+            WHERE use_time >= %s AND use_time < DATE_ADD(%s, INTERVAL 1 DAY)
+            """
+
+            async with self.db.get_async_connection() as connection:
+                def _check():
+                    cursor = connection.cursor(pymysql.cursors.DictCursor)
+                    try:
+                        cursor.execute(check_query, params)
+                        result = cursor.fetchone()
+                        return result
+                    finally:
+                        cursor.close()
+
+                check_result = await asyncio.get_event_loop().run_in_executor(None, _check)
+                logger.info(f"🔍 [Power Usage] 소스 데이터 확인 - 건수: {check_result['cnt']}, "
+                           f"최소시간: {check_result['min_time']}, 최대시간: {check_result['max_time']}")
+
+                if check_result['cnt'] == 0:
+                    logger.warning(f"⚠️ [Power Usage] {target_date}에 해당하는 소스 데이터가 없습니다.")
+
             # INSERT ON DUPLICATE KEY UPDATE를 사용하여 UPSERT 구현
-            # ymdhms를 매칭 키로 사용하여 중복 시 해당 필드만 업데이트 (다른 필드는 유지)
+            # ymdhms가 이미 존재하면 pwr_usage, pwr_forecase만 업데이트 (다른 컬럼 보존)
+            # ymdhms가 없으면 새로운 행 INSERT
+            # 인덱스 활용을 위해 DATE() 함수 대신 범위 조건 사용
             query = f"""
             INSERT INTO {self.ai_pwr_usage_table}
                 (ymdhms, pwr_usage, pwr_forecase)
-            SELECT
-                use_time as ymdhms,
-                pwr_kepco_usage_tot as pwr_usage,
-                forecast_quantity as pwr_forecase
-            FROM {self.smarteye_day_table}
-            WHERE DATE(use_time) = %s
+            SELECT * FROM (
+                SELECT
+                    use_time as ymdhms,
+                    pwr_kepco_usage_tot as pwr_usage,
+                    forecast_quantity as pwr_forecase
+                FROM {self.smarteye_day_table}
+                WHERE use_time >= %s AND use_time < DATE_ADD(%s, INTERVAL 1 DAY)
+            ) AS new_data
             ON DUPLICATE KEY UPDATE
-                pwr_usage = VALUES(pwr_usage),
-                pwr_forecase = VALUES(pwr_forecase)
+                pwr_usage = new_data.pwr_usage,
+                pwr_forecase = new_data.pwr_forecase
             """
 
             logger.info(f"🔍 [Power Usage] 파라미터: {params}")
@@ -70,27 +101,35 @@ class PowerUsageService:
                         cursor.execute(query, params)
                         connection.commit()
                         affected_rows = cursor.rowcount
-                        logger.info(f"✅ [Power Usage] 영향받은 행 수: {affected_rows}")
+                        # ON DUPLICATE KEY UPDATE의 rowcount:
+                        # 1 = 새로운 행 삽입
+                        # 2 = 기존 행 업데이트
+                        # 0 = 업데이트했지만 값 변화 없음
+                        logger.info(f"✅ [Power Usage] rowcount: {affected_rows} (1=INSERT, 2=UPDATE, 0=변화없음)")
                         return affected_rows
                     finally:
                         cursor.close()
 
-                inserted_count = await asyncio.get_event_loop().run_in_executor(None, _execute)
+                affected_rows = await asyncio.get_event_loop().run_in_executor(None, _execute)
 
-            logger.info(f"✅ [Power Usage] 데이터 집계 및 적재 완료: {inserted_count}건")
+            if affected_rows == 0 and check_result['cnt'] > 0:
+                logger.warning(f"⚠️ [Power Usage] 소스 데이터({check_result['cnt']}건)는 있지만 값 변화 없음 - 동일한 데이터가 이미 존재")
+
+            logger.info(f"✅ [Power Usage] 데이터 집계 및 적재 완료 (영향받은 행: {affected_rows})")
 
             return {
                 "success": True,
-                "inserted_count": inserted_count,
+                "affected_rows": affected_rows,
+                "source_count": check_result['cnt'],
                 "target_date": target_date,
-                "message": f"{target_date} 날짜의 데이터 {inserted_count}건의 Power Usage 데이터를 적재했습니다."
+                "message": f"{target_date} 날짜의 Power Usage 데이터 UPSERT 완료 (소스: {check_result['cnt']}건, 영향받은 행: {affected_rows})"
             }
 
         except Exception as e:
             logger.error(f"❌ [Power Usage] 데이터 집계 및 적재 실패: {str(e)}")
             return {
                 "success": False,
-                "inserted_count": 0,
+                "affected_rows": 0,
                 "target_date": target_date,
                 "message": f"Power Usage 데이터 적재 중 오류 발생: {str(e)}"
             }

@@ -5,9 +5,6 @@ import logging
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api.solar_power_endpoints import router as solar_power_router
-from app.api.ess_charge_endpoints import router as ess_charge_router
-from app.api.power_usage_endpoints import router as power_usage_router
 from app.api.aggregate_endpoints import router as aggregate_router
 
 # 로깅 설정
@@ -52,10 +49,7 @@ app.add_middleware(
 )
 
 # 라우터 등록
-app.include_router(aggregate_router, prefix="/api/v1")  # 통합 엔드포인트 (우선순위 높음)
-app.include_router(solar_power_router, prefix="/api/v1")
-app.include_router(ess_charge_router, prefix="/api/v1")
-app.include_router(power_usage_router, prefix="/api/v1")
+app.include_router(aggregate_router, prefix="/api/v1")  # 통합 엔드포인트
 
 @app.get("/")
 async def root():
@@ -63,13 +57,10 @@ async def root():
     return {
         "message": "TB AI Data Aggregation API",
         "version": settings.API_VERSION,
-        "description": "태양광, ESS 충전량, 전력 사용량 데이터 집계 API",
+        "description": "태양광, 전력 사용량, ESS 예측 데이터 통합 집계 API",
         "docs_url": "/docs",
         "endpoints": {
-            "all_aggregate": "/api/v1/aggregate/all (통합 - 하나의 input으로 모든 서비스 실행)",
-            "solar_power": "/api/v1/solar-power",
-            "ess_charge": "/api/v1/ess-charge",
-            "power_usage": "/api/v1/power-usage (미정)"
+            "aggregate_all": "/api/v1/aggregate/all - Solar Power, Power Usage, ESS Predict 통합 집계"
         }
     }
 

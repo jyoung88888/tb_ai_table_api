@@ -13,9 +13,10 @@ class AggregationRequest(BaseModel):
 class AggregationResponse(BaseModel):
     """데이터 집계 응답 스키마"""
     success: bool = Field(..., description="성공 여부")
-    inserted_count: int = Field(..., description="적재된 레코드 수")
+    affected_rows: int = Field(..., description="영향받은 행 수 (1=INSERT, 2=UPDATE, 0=변화없음)")
     target_date: str = Field(..., description="처리된 날짜")
     message: str = Field(..., description="응답 메시지")
+    source_count: Optional[int] = Field(None, description="소스 데이터 건수 (있는 경우)")
 
 # ============================================================
 # Solar Power 스키마

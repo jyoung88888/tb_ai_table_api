@@ -8,8 +8,9 @@ import logging
 
 from app.models.schemas import AggregationRequest, AggregationResponse
 from app.services.solar_power_service import get_solar_power_service, SolarPowerService
-from app.services.ess_charge_service import get_ess_charge_service, ESSChargeService
 from app.services.power_usage_service import get_power_usage_service, PowerUsageService
+from app.services.ess_predict_service import get_ess_predict_service, ESSPredictService
+from app.services.ess_charge_service import get_ess_charge_service, ESSChargeService
 
 logger = logging.getLogger(__name__)
 
@@ -19,11 +20,12 @@ router = APIRouter(prefix="/aggregate", tags=["Data Aggregation"])
 async def aggregate_all_data(
     request: AggregationRequest,
     solar_service: SolarPowerService = Depends(get_solar_power_service),
-    ess_service: ESSChargeService = Depends(get_ess_charge_service),
-    power_service: PowerUsageService = Depends(get_power_usage_service)
+    power_service: PowerUsageService = Depends(get_power_usage_service),
+    ess_predict_service: ESSPredictService = Depends(get_ess_predict_service),
+    ess_charge_service: ESSChargeService = Depends(get_ess_charge_service)
 ):
     """
-    하나의 날짜 입력으로 Solar Power, ESS Charge, Power Usage 모두 집계 및 적재
+    하나의 날짜 입력으로 Solar Power, Power Usage, ESS Predict, ESS Charge 모두 집계 및 적재
 
     - **target_date**: 대상 날짜 (YYYY-MM-DD) - 필수
 
@@ -42,30 +44,14 @@ async def aggregate_all_data(
                 target_date=request.target_date
             )
             results["solar_power"] = AggregationResponse(**solar_result)
-            logger.info(f"✅ [Solar Power] 완료: {solar_result['inserted_count']}건")
+            logger.info(f"✅ [Solar Power] 완료: 영향받은 행 {solar_result['affected_rows']}")
         except Exception as e:
             logger.error(f"❌ [Solar Power] 실패: {str(e)}")
             results["solar_power"] = AggregationResponse(
                 success=False,
-                inserted_count=0,
+                affected_rows=0,
                 target_date=request.target_date,
                 message=f"Solar Power 집계 실패: {str(e)}"
-            )
-
-        # ESS Charge 집계
-        try:
-            ess_result = await ess_service.aggregate_and_insert(
-                target_date=request.target_date
-            )
-            results["ess_charge"] = AggregationResponse(**ess_result)
-            logger.info(f"✅ [ESS Charge] 완료: {ess_result['inserted_count']}건")
-        except Exception as e:
-            logger.error(f"❌ [ESS Charge] 실패: {str(e)}")
-            results["ess_charge"] = AggregationResponse(
-                success=False,
-                inserted_count=0,
-                target_date=request.target_date,
-                message=f"ESS Charge 집계 실패: {str(e)}"
             )
 
         # Power Usage 집계
@@ -74,14 +60,46 @@ async def aggregate_all_data(
                 target_date=request.target_date
             )
             results["power_usage"] = AggregationResponse(**power_result)
-            logger.info(f"✅ [Power Usage] 완료: {power_result['inserted_count']}건")
+            logger.info(f"✅ [Power Usage] 완료: 영향받은 행 {power_result['affected_rows']}")
         except Exception as e:
             logger.error(f"❌ [Power Usage] 실패: {str(e)}")
             results["power_usage"] = AggregationResponse(
                 success=False,
-                inserted_count=0,
+                affected_rows=0,
                 target_date=request.target_date,
                 message=f"Power Usage 집계 실패: {str(e)}"
+            )
+
+        # ESS Predict 집계
+        try:
+            ess_predict_result = await ess_predict_service.aggregate_and_insert(
+                target_date=request.target_date
+            )
+            results["ess_predict"] = AggregationResponse(**ess_predict_result)
+            logger.info(f"✅ [ESS Predict] 완료: 영향받은 행 {ess_predict_result.get('affected_rows', ess_predict_result.get('inserted_count', 0))}")
+        except Exception as e:
+            logger.error(f"❌ [ESS Predict] 실패: {str(e)}")
+            results["ess_predict"] = AggregationResponse(
+                success=False,
+                affected_rows=0,
+                target_date=request.target_date,
+                message=f"ESS Predict 집계 실패: {str(e)}"
+            )
+
+        # ESS Charge 집계
+        try:
+            ess_charge_result = await ess_charge_service.aggregate_and_insert(
+                target_date=request.target_date
+            )
+            results["ess_charge"] = AggregationResponse(**ess_charge_result)
+            logger.info(f"✅ [ESS Charge] 완료: 영향받은 행 {ess_charge_result.get('affected_rows', ess_charge_result.get('inserted_count', 0))}")
+        except Exception as e:
+            logger.error(f"❌ [ESS Charge] 실패: {str(e)}")
+            results["ess_charge"] = AggregationResponse(
+                success=False,
+                affected_rows=0,
+                target_date=request.target_date,
+                message=f"ESS Charge 집계 실패: {str(e)}"
             )
 
         logger.info(f"📊 [통합 집계] 완료 - {request.target_date}")

@@ -1,6 +1,6 @@
 """
 ESS 충전량 데이터 집계 서비스
-tb_ai_ess_charge_amt 테이블에 데이터 적재
+여러 테이블에서 데이터를 수집하여 tb_ai_ess_charge_amt 테이블에 적재
 """
 import asyncio
 import logging
@@ -19,17 +19,20 @@ class ESSChargeService:
             db_manager: DatabaseManager 인스턴스
         """
         self.db = db_manager
-        self.solar_day_table = settings.table_names.get('solar_day', 'tb_solar_day')
+        self.ai_solar_power_table = settings.table_names.get('ai_solar_power', 'tb_ai_solar_power')
+        self.ai_pwr_usage_table = settings.table_names.get('ai_pwr_usage', 'tb_ai_pwr_usage')
+
         self.bms_daily_stat_table = settings.table_names.get('bms_daily_stat', 'tb_nrt_bms_daily_stat')
         self.ai_ess_charge_table = settings.table_names.get('ai_ess_charge_amt', 'tb_ai_ess_charge_amt')
 
     async def aggregate_and_insert(self, target_date: str) -> Dict[str, Any]:
         """
-        tb_solar_day와 tb_nrt_bms_daily_stat의 데이터를 조합하여 tb_ai_ess_charge_amt에 적재
-        지정된 날짜(YYYY-MM-DD) 하루분의 데이터를 집계하여 하나의 레코드로 적재
+        여러 테이블의 데이터를 기반으로 ESS 충전량 데이터를 tb_ai_ess_charge_amt에 적재
 
-        집계 방법:
-        - pre_pwr_generation, today_generation, pre_charge, charge_amount: SUM
+        데이터 소스:
+        1. ai_solar_power (ymdhms 기준) -> pre_pwr_generation, today_generation
+        2. ai_pwr_usage (ymdhms 기준) -> pwr_usage, AccruepowGap, pwr_forecase -> pre_pwr_generation
+        3. bms_daily_stat (V_TIME 기준) -> forecast_quantity, CHARGE_AMOUNT
 
         Args:
             target_date: 대상 날짜 (YYYY-MM-DD)
@@ -40,65 +43,109 @@ class ESSChargeService:
         logger.info(f"📊 [ESS Charge] 데이터 집계 및 적재 시작 - {target_date}")
 
         try:
-            params = [target_date, target_date]
-
             logger.info(f"📅 [ESS Charge] 대상 날짜: {target_date}")
 
-            # 집계 쿼리 작성 (날짜별로 하나의 레코드로 집계)
-            # 모든 필드: SUM
-            query = f"""
-            REPLACE INTO {self.ai_ess_charge_table}
-                (ymdhms, pre_pwr_generation, today_generation, pre_charge, charge_amount)
-            SELECT
-                %s as ymdhms,
-                SUM(sd.forecast_quantity) as pre_pwr_generation,
-                SUM(sd.today_generation) as today_generation,
-                CASE
-                    WHEN REPLACE(TRIM(bms.forecast_quantity), ',', '') REGEXP '^-?[0-9]*\\.?[0-9]+$'
-                    THEN CAST(REPLACE(TRIM(bms.forecast_quantity), ',', '') AS DECIMAL(20,2))
-                    ELSE 0
-                END AS pre_charge,
-                CASE
-                    WHEN REPLACE(TRIM(bms.D_BAT_SOC), ',', '') REGEXP '^-?[0-9]*\\.?[0-9]+$'
-                    THEN CAST(REPLACE(TRIM(bms.D_BAT_SOC), ',', '') AS DECIMAL(20,2))
-                    ELSE 0
-                END AS charge_amount
-            FROM {self.solar_day_table} sd
-            INNER JOIN {self.bms_daily_stat_table} bms
-                ON DATE(sd.ymdhms) = DATE(bms.T_CREATE_DT)
-            WHERE DATE(sd.ymdhms) = %s
+            # 1단계: ai_solar_power 데이터 UPSERT
+            logger.info(f"🔄 [ESS Charge] Step 1: Solar Power 데이터 업데이트")
+            solar_query = f"""
+            INSERT INTO {self.ai_ess_charge_table}
+                (ymdhms, pre_pwr_generation, today_generation)
+            SELECT * FROM (
+                SELECT
+                    sp.ymdhms,
+                    sp.pre_pwr_generation,
+                    sp.today_generation
+                FROM {self.ai_solar_power_table} sp
+                WHERE DATE(sp.ymdhms) = %s
+            ) AS new_data
+            ON DUPLICATE KEY UPDATE
+                pre_pwr_generation = new_data.pre_pwr_generation,
+                today_generation = new_data.today_generation
             """
 
-            logger.info(f"🔍 [ESS Charge] 파라미터: {params}")
+            # 2단계: ai_pwr_usage 데이터 UPSERT
+            # pwr_usage, AccruepowGap만 처리 (pre_pwr_generation은 1단계에서 이미 처리됨)
+            logger.info(f"🔄 [ESS Charge] Step 2: Power Usage 데이터 업데이트")
+            usage_query = f"""
+            INSERT INTO {self.ai_ess_charge_table}
+                (ymdhms, pwr_usage, AccruepowGap)
+            SELECT * FROM (
+                SELECT
+                    pu.ymdhms,
+                    pu.pwr_usage,
+                    pu.AccruepowGap
+                FROM {self.ai_pwr_usage_table} pu
+                WHERE DATE(pu.ymdhms) = %s
+            ) AS new_data
+            ON DUPLICATE KEY UPDATE
+                pwr_usage = new_data.pwr_usage,
+                AccruepowGap = new_data.AccruepowGap
+            """
+
+            # 3단계: bms_daily_stat 데이터 UPSERT
+            logger.info(f"🔄 [ESS Charge] Step 3: BMS Daily Stat 데이터 업데이트")
+            bms_query = f"""
+            INSERT INTO {self.ai_ess_charge_table}
+                (ymdhms, pre_charge, charge_amount)
+            SELECT * FROM (
+                SELECT
+                    STR_TO_DATE(bms.V_TIME, '%%Y%%m%%d') as ymdhms,
+                    bms.forecast_quantity as pre_charge,
+                    bms.CHARGE_AMOUNT as charge_amount
+                FROM {self.bms_daily_stat_table} bms
+                WHERE DATE(STR_TO_DATE(bms.V_TIME, '%%Y%%m%%d')) = %s
+            ) AS new_data
+            ON DUPLICATE KEY UPDATE
+                pre_charge = new_data.pre_charge,
+                charge_amount = new_data.charge_amount
+            """
 
             async with self.db.get_async_connection() as connection:
                 def _execute():
                     cursor = connection.cursor()
+                    total_affected = 0
+
                     try:
-                        cursor.execute(query, params)
+                        # Step 1: Solar Power
+                        cursor.execute(solar_query, [target_date])
+                        solar_affected = cursor.rowcount
+                        logger.info(f"  ✅ Solar Power: {solar_affected}건")
+                        total_affected += solar_affected
+
+                        # Step 2: Power Usage
+                        cursor.execute(usage_query, [target_date])
+                        usage_affected = cursor.rowcount
+                        logger.info(f"  ✅ Power Usage: {usage_affected}건")
+                        total_affected += usage_affected
+
+                        # Step 3: BMS Daily Stat
+                        cursor.execute(bms_query, [target_date])
+                        bms_affected = cursor.rowcount
+                        logger.info(f"  ✅ BMS Daily Stat: {bms_affected}건")
+                        total_affected += bms_affected
+
                         connection.commit()
-                        affected_rows = cursor.rowcount
-                        logger.info(f"✅ [ESS Charge] 영향받은 행 수: {affected_rows}")
-                        return affected_rows
+                        logger.info(f"✅ [ESS Charge] 총 영향받은 행 수: {total_affected}건")
+                        return total_affected
                     finally:
                         cursor.close()
 
-                inserted_count = await asyncio.get_event_loop().run_in_executor(None, _execute)
+                affected_rows = await asyncio.get_event_loop().run_in_executor(None, _execute)
 
-            logger.info(f"✅ [ESS Charge] 데이터 집계 및 적재 완료: {inserted_count}건")
+            logger.info(f"✅ [ESS Charge] 데이터 집계 및 적재 완료 (총 영향받은 행: {affected_rows})")
 
             return {
                 "success": True,
-                "inserted_count": inserted_count,
+                "affected_rows": affected_rows,
                 "target_date": target_date,
-                "message": f"{target_date} 날짜의 데이터를 집계하여 {inserted_count}건의 ESS Charge 데이터를 적재했습니다."
+                "message": f"{target_date} 날짜의 ESS Charge 데이터 UPSERT 완료 (총 영향받은 행: {affected_rows})"
             }
 
         except Exception as e:
             logger.error(f"❌ [ESS Charge] 데이터 집계 및 적재 실패: {str(e)}")
             return {
                 "success": False,
-                "inserted_count": 0,
+                "affected_rows": 0,
                 "target_date": target_date,
                 "message": f"ESS Charge 데이터 적재 중 오류 발생: {str(e)}"
             }
@@ -116,6 +163,7 @@ class ESSChargeService:
         query = f"""
         SELECT
             ymdhms, pre_pwr_generation, today_generation,
+            pwr_usage, AccruepowGap,
             pre_charge, charge_amount
         FROM {self.ai_ess_charge_table}
         ORDER BY ymdhms DESC
