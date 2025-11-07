@@ -1,6 +1,6 @@
 # TB AI Data Aggregation API
 
-MariaDB 테이블들의 데이터를 조합하여 AI 테이블에 적재하는 API입니다.
+MariaDB 테이블들의 데이터를 조합하여 AI 테이블에 적재하는 용도 API입니다.
 
 ## 기능
 
